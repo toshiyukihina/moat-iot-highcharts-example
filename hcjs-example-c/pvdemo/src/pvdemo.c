@@ -38,16 +38,71 @@
 #define PV_DEMO_CONFIG_FILE					"/tmp/pvdemo.conf"
 #define PV_DATA_MAX_LENGTH					(256)
 
+/*! 太陽光パネルデモアプリケーションクラス。
+ * 
+ * 本クラスは、Rooster GX にシリアル接続された太陽光パネルから、
+ * 電圧及び電流を取得し、SUNSYNC の Backend サーバーに送信するクラスである。
+ * 
+ * \see http://dev.yourinventit.com/references/moat-c-api-document
+ * \see http://dev.yourinventit.com/references/moat-iot-model-descriptor
+ */
 typedef struct PvDemoApp_ PvDemoApp;
 struct PvDemoApp_ {
+	/*! モデルデータを管理及び操作するための MOAT インタフェースの実体。
+	 * 
+	 * \see http://dev.yourinventit.com/references/moat-c-api-document#Moat
+	 */
 	Moat Moat;
+
+	/*! ジョブサービス識別子 (Job Service Identifier)。
+	 *
+	 * \see http://dev.yourinventit.com/guides/moat-iot/app-design-in-moat-iot [Job Service Identifier]
+	 */
 	sse_char *Urn;
+
+	/*! サービス ID。
+	 *
+	 * [Prefix]:[URN]:[Service Name]:[Suffix] の形式。
+	 *
+	 * 以下はサービス ID の例。
+	 * <pre>
+	 * "urn:moat:9999d129-5ba5-4912-963e-0edecee52664:twitter-demo:save-data:1.0"
+	 * </pre>
+	 *
+	 * \see 
+	 */
 	sse_char *ServiceId;
+
+	/*! センサーデータ収集タイマー。
+	 *
+	 * 本タイマーの満了契機で、太陽光パネルのセンサーデータを取得する。
+	 */
 	ev_periodic CollectionTimer;
+
+	/*! センサーデータアップロードタイマー。
+	 *
+	 * 本タイマーの満了契機で、DataCollector に蓄積された太陽光パネルのセンサーデータをアップロードする。
+	 */
 	ev_periodic UploadTimer;
+
+	/*! 収集したセンサーデータを管理する MOAT オブジェクト。
+	 *
+	 * 収集された太陽光パネルのセンサーデータは、一旦本オブジェクトに保存される。
+	 *
+	 * \see http://dev.yourinventit.com/references/moat-c-api-document#MoatObject
+	 */
 	MoatObject *DataCollection;
 };
 
+/*! サービス ID を生成する。
+ *
+ * 与えられた \a in_urn 及び \a in_service_name より、サービス ID を生成する。
+ * サービス ID は、呼び出し側で解放する必要がある。
+ *
+ * @param [in] in_urn URN。
+ * @param [in] in_service_name サービス名。
+ * @return サービス ID。
+ */
 static sse_char *
 create_notification_id(sse_char *in_urn, sse_char *in_service_name)
 {
@@ -83,6 +138,16 @@ create_notification_id(sse_char *in_urn, sse_char *in_service_name)
 	return noti_id;
 }
 
+/*! 太陽光パネルのセンサーデータ行を読み込む。
+ *
+ * \a in_path で指定したファイルから太陽光パネルのセンサーデータ行を読み込む。
+ *
+ * @param [in] in_path センサーデータが書き込まれたファイルのパス。
+ * @return !=NULL \a in_path から読み込んだセンサーデータ行. 呼び出し元で解放する必要がある。
+ * @return ==NULL センサーデータの読み込みに失敗した. 失敗要因は以下のいずれか。
+ * - \a in_path のオープンに失敗。
+ * - \a in_path のファイルサイズの取得に失敗。
+ */
 static sse_char *
 read_record(sse_char *in_path)
 {
@@ -145,6 +210,15 @@ error_exit:
 	return NULL;
 }
 
+/*! センサーデータを MOAT オブジェクトに変換する。
+ *
+ * \a in_record がポイントするバッファに書き込まれているセンサーデータを解析し、MOAT オブジェクトに変換する。
+ * センサーデータのフォーマットは、サン電子株式会社が提供する PC20 ファイルフォーマットに準ずる。
+ *
+ * @param [in] in_record センサーデータ行。
+ * @param [in] in_len \a in_recordがポイントするバッファの長さ。
+ * @return センサーデータを格納したMOATオブジェクト。
+ */
 static MoatObject *
 create_sensing_data(sse_char *in_record, sse_uint in_len)
 {
@@ -238,6 +312,15 @@ error_exit:
 	return NULL;
 }
 
+/*! センサーデータをアップロードする。
+ *
+ * PvDemoApp#oDataCollection に蓄積されているセンサーデータを ServiceSync の Backend サーバーにアップロードする。
+ *
+ * @param [in] self 太陽光パネルデモアプリケーションクラスのインスタンス。
+ * @return >0 リクエスト ID。 moat_send_notification が返す値。
+ * @return SSE_OK センサーデータが存在しない。
+ * @return SSE_INVAL \a MOAT オブジェクトが NULL である。
+ */
 static sse_int
 pvdemoapp_upload_data(PvDemoApp *self)
 {
@@ -258,6 +341,15 @@ pvdemoapp_upload_data(PvDemoApp *self)
 	return req_id;
 }
 
+/*! アップロードタイマー満了時に呼び出されるコールバック関数。
+ * 
+ * 本コールバック関数が呼び出された契機で、 Backend サーバーにセンサーデータをアップロードする。
+ * 
+ * @param [in] loop メッセージループ。
+ * @param [in] w 定期監視オブジェクト。
+ * @param [in] revents イベント種別。
+ * @see http://doc.dvgu.ru/devel/ev.html
+ */
 static void
 pvdemoapp_upload_interval_proc(struct ev_loop *loop, ev_periodic *w, int revents)
 {
@@ -266,6 +358,15 @@ pvdemoapp_upload_interval_proc(struct ev_loop *loop, ev_periodic *w, int revents
 	pvdemoapp_upload_data(app);
 }
 
+/*! センサーデータ収集タイマー満了時に呼び出されるコールバック関数。
+ *
+ * 本コールバック関数が呼び出された契機で、 センサーデータを収集する。
+ * 
+ * @param [in] loop メッセージループ。
+ * @param [in] w 定期監視オブジェクト。
+ * @param [in] revents イベント種別。
+ * @see http://doc.dvgu.ru/devel/ev.html
+ */
 static void
 pvdemoapp_sensing_interval_proc(struct ev_loop *loop, ev_periodic *w, int revents)
 {
@@ -335,6 +436,14 @@ error_exit:
 	}
 }
 
+/*! 設定ファイルから太陽光パネルデモアプリケーションの設定情報を取得する。
+ *
+ * 設定ファイルから以下に示す情報を取得し、\a out_s_interval に収集間隔(秒)を、
+ * \a out_u_interval にアップロード間隔(秒)を書き込む。
+ * 
+ * @param [out] センサー情報の収集間隔(秒)。
+ * @param [out] センサー情報のアップロード間隔(秒)。
+ */
 static void
 pvdemoapp_get_monitoring_config(sse_uint *out_s_interval, sse_uint *out_u_interval)
 {
@@ -367,6 +476,14 @@ done:
 	APP_LOG_DEBUG("sensing interval sec=[%d], upload interval sec=[%d]", s, u);
 }
 
+/*! 太陽光パネルデモアプリケーションを起動する。
+ * 
+ * \a self がポイントするデモアプリケーションクラスの実体を初期化する。
+ * 
+ * @param [in] self デモアプリケションの実体。
+ * @return SSE_OK 正常に初期化が終了した。
+ * @return SSE_E_NOMEM メモリ不足。
+ */
 static sse_int
 pvdemoapp_start(PvDemoApp *self)
 {
@@ -422,6 +539,12 @@ error_exit:
 	return err;
 }
 
+/*! 太陽光パネルデモアプリケーションを停止する。
+ * 
+ * \a self がポイントするデモアプリケーションクラスを停止する。
+ * 
+ * @param [in] self デモアプリケションの実体。
+ */
 static void
 pvdemoapp_stop(PvDemoApp *self)
 {
@@ -443,6 +566,13 @@ pvdemoapp_stop(PvDemoApp *self)
 	}
 }
 
+/*! 太陽光パネルデモアプリケーションクラスのインスタンスを生成する。
+ *
+ * @param [in] in_moat MOAT オブジェクト。
+ * @param [in] in_urn URN。
+ * @return !=NULL 太陽光パネルデモアプリケーションのオブジェクト。
+ * @return ==NULL オブジェクトの生成に失敗した。
+ */
 static PvDemoApp *
 pvdemoapp_new(Moat in_moat, sse_char *in_urn)
 {
@@ -458,12 +588,26 @@ pvdemoapp_new(Moat in_moat, sse_char *in_urn)
 	return app;
 }
 
+/*! 太陽光パネルデモアプリケーションを解放する。
+ *
+ * @param [in] self 太陽光パネルデモアプリケーションのオブジェクト。
+ */
 static void
 pvdemoapp_free(PvDemoApp *self)
 {
 	free(self);
 }
 
+/*! アプリケーションのエントリポイント。
+ * 
+ * ゲートウェイから呼び出されるアプリケーションのエントリポイント。
+ * 
+ * @param [in] argc アプリケーションの引数の数。
+ * @param [in] argv アプリケーションの引数。in_argv[0] には、アプリケーションの URN が格納されている。
+ * @return EXIT_SUCCESS 正常終了。
+ * @return EXIT_FAILURE エラー終了。
+ * @see http://dev.yourinventit.com/references/moat-c-api-document#MoatApp
+ */
 sse_int
 moat_app_main(sse_int argc, sse_char *argv[])
 {
